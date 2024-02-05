@@ -1,147 +1,113 @@
-import uproot
-import numpy as np
-import matplotlib.pyplot as plt
-#import mplhep as hep
-#plt.style.use(hep.style.ROOT)
-import pandas as pd
-from csv import writer
-from scipy.stats import norm
-import argparse
-import os
-import seaborn as sns
+import numpy as np # The world's best library
+import pandas as pd # File I/O
+import time # Measure approximate execution time
+from scipy.stats import norm # Gaussian fitting
+import os # Scanning directories for files
+import seaborn as sns # Plotting
+import matplotlib.pyplot as plt # For plotting
+import mplhep as hep # For prettier ROOT-style plots
+hep.style.use(hep.style.ROOT)
+import uproot as up # For ROOT file I/O
+import boost_histogram as bh # Nicer histogram manipulation
+from hist import Hist # Wrapper for boost histogram
+import sys # For processing of command line arguments
 
-directory = '/eos/user/j/jsanders/cedar_roots/Alignment_Nitrogen/'
+VERSION = 1.0
 
-c = 0
+def process_command_line_args(args):
+    ''' Process command line arguments from user '''
+    arguments = {
+        "directory": "",
+        "wantsHelp": False
+    }
+    for i, arg in enumerate(args):
+        if(arg == "--dir"):
+            if len(args) <= i + 1:
+                print("[Warning] You must provide a valid directory")
+                continue
+            arguments["directory"] = args[i+1]            
+        if(arg == "--help"):
+            arguments["wantsHelp"] = True
+    return arguments
 
-Motor_x = []
-Motor_y = []
-Nhits = []
+def display_help():
+    print(f"CEDAR Alignment Tool (v{VERSION})\n--------------------\nArguments:\n--help\tDisplay this help menu.\n--dir <directory>\tPath to the directory with the reconstructed ROOT files to process.\n\n")
 
-for filename in os.scandir(directory):
-    if filename.is_file():
+if __name__ == "__main__":
+    args = process_command_line_args(sys.argv[1:]) # First argument is the name of the file which we don't need
+    if(args["wantsHelp"]):
+        display_help()
+    else:
+        c = 0
+        motor_x = []
+        motor_y = []
+        nhits = []
         
-        if "tar" in filename.path:
-            continue
+        if not os.path.isdir(args["directory"]):
+            print("[Error] The provided directory does not exist.")
+            exit()
+        files = [filename for filename in os.scandir(args["directory"]) if filename.is_file and "tar" not in filename.path and ".root" in filename.path]
+        start_time = time.time_ns() // 1.0E+6
+        for n, filename in enumerate(files):
+            with up.open(filename) as f:
+                h_NRecoHitsInSelectedCandidate = f["CedarMonitor/NRecoHitsInSelectedCandidate"].to_hist()
+                h_NSectorsInSelectedCandidate = f["CedarMonitor/NSectorsInSelectedCandidate"].to_hist()
+
+                current_motor_x = np.min(f['SpecialTrigger']['Cedar/fDIMInfo/fDIMInfo.fMotorPosX'].array())
+                current_motor_y = np.min(f['SpecialTrigger']['Cedar/fDIMInfo/fDIMInfo.fMotorPosY'].array())
+                burst = f['SpecialTrigger;1']['EventHeader/fBurstID'].array()[0]
+                
+            # TODO: Document which plot this is
+            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+            bins_sel = h_NRecoHitsInSelectedCandidate.axes[0].edges
+            weight_sel = h_NRecoHitsInSelectedCandidate.values()
+            counts, bin_edges, bars = ax.hist(bins_sel[1:], bins_sel, weights=weight_sel, label="")
+
+            # Construct a list of the "raw" histogram e.g. 22 would be repeated for the height of the 22 bin
+            value = [bin_edges[i] for i in range(len(bin_edges[1:])) for t in range(int(counts[i]))]
+            mu, std = norm.fit(value) # Fit a Gaussian to the hit distribution for reco candidates
         
-        if ".root" not in filename.path:
-            continue
-
-
-        try: 
-            inFile = uproot.open(filename)
-        except ValueError:
-            continue
-        except OSError:
-            continue
-
-        h_NRecoHitsInSelectedCandidate = inFile["CedarMonitor/NRecoHitsInSelectedCandidate"]
+            if mu < 15: # Fit was bad, skip
+                continue
         
-        h_NSectorsInSelectedCandidate = inFile["CedarMonitor/NSectorsInSelectedCandidate"]
+            nhits.append(mu)
+            motor_x.append((round(current_motor_x*1000)/1000))
+            motor_y.append((round(current_motor_y*1000)/1000))
         
-        cur_M_X = min(inFile['SpecialTrigger;1']['Cedar/fDIMInfo/fDIMInfo.fMotorPosX'].array())
-        cur_M_Y = min(inFile['SpecialTrigger;1']['Cedar/fDIMInfo/fDIMInfo.fMotorPosY'].array())
-
-        burst = inFile['SpecialTrigger;1']['EventHeader/fBurstID'].array()[0]
-
-
-        fig, axs = plt.subplots(1, 1,figsize=(10,10))
-        ax1 = axs
-
-        # Plot 1
-
-        bins_sel = h_NRecoHitsInSelectedCandidate.axis().edges()
-        weight_sel = h_NRecoHitsInSelectedCandidate.counts()
-
-        counts, bins, bars = ax1.hist(bins_sel[1:],bins_sel, weights=weight_sel)#, label="NHits (Sel): mu = {}".format(mu))
-
-        value = []
-        for i in range(len(bins[1:])):
-            for t in range(int(counts[i])):
-                value.append(bins[i])
-
-        mu, std = norm.fit(value)
+            print(f"[Info] Burst ID = {burst}\tMotor position ({motor_x[-1]}, {motor_y[-1]})")
         
-        if mu < 15:
-            continue
-        
+            x = np.linspace(10, 30, 100) # Number of hits
+            p = norm.pdf(x, loc=mu, scale=std) # Gaussian PDF using the calculated mean and std.
+            p *= np.sum(counts) # Scale by the total number of hits
 
-        Nhits.append(mu)
-        Motor_x.append((round(cur_M_X*1000)/1000))
-        Motor_y.append((round(cur_M_Y*1000)/1000))
-        
-        print(burst, Motor_x[-1], Motor_y[-1])
-        
-        x = np.linspace(10, 30, 100)
+            ax.plot(x, p, 'k', linewidth=2, label=f"NHits (Sel): mu = {mu:.2f}")
+            #print(f"Fit Data: mu = {mu:.2f}")
 
-        p = norm.pdf(x, loc=mu,scale=std)
+            ax.set_xlim(0,40)
+            ax.legend()
+            ax.set_title("Number of Reco Hits in Candidate")
+            ax.set_xlabel("Number of Hits")
+            ax.grid()
+            plt.clf()
+            plt.close()
 
-        counts_sum = sum(counts)
+            current_time = time.time_ns() // 1.0E+6
+            print(f"[Info] Processed {((n+1)/len(files))*100:.2f}% ({n}/{len(files)}) in {current_time - start_time} milliseconds")
 
-        p = p*counts_sum
+        nhits = np.array(nhits).astype(np.int32)
+        motor_x = np.array(motor_x).astype(np.float64)
+        motor_y = np.array(motor_y).astype(np.float64)
 
-        ax1.plot(x, p, 'k', linewidth=2, label="NHits (Sel): mu = {}".format(mu))
-        print("Fit Data: mu = {}".format(mu))
-
-        ax1.set_xlim(0,40)
-        ax1.legend()
-        ax1.set_title("Number of Reco Hits in Candidate")
-        
-        plt.clf()
-        plt.close()
-        
-
-fig, axs = plt.subplots(1, 1,figsize=(10,10))
-
-axs.plot(Motor_x,Nhits)
-axs.set_xlabel("X motor [mm]")
-axs.set_ylabel("Nhits in Selected Candidate")
-
-fig, axs2 = plt.subplots(1, 1,figsize=(10,10))
-
-axs2.plot(Motor_y,Nhits)
-axs2.set_xlabel("Y motor [mm]")
-axs2.set_ylabel("Nhits in Selected Candidate")
-
-fig, axs3 = plt.subplots(1, 1,figsize=(20,10))
-
-
-#axs3.pcolormesh(Motor_x,Motor_y,Nhits)
-
-Nhits = np.array(Nhits)
-Motor_x = np.array(Motor_x)
-Motor_y = np.array(Motor_y)
-
-
-#df = pd.DataFrame(data=[Nhits], columns=Motor_x, index=Motor_y)
-df = pd.DataFrame(list(zip(Motor_x, Motor_y,Nhits)),columns =['MotorX', 'MotorY','NHits'])
-
-#print(df)
-#print(df.groupby(['MotorX', 'MotorY'], as_index=False)['NHits'].mean())
-error = df.groupby(['MotorX', 'MotorY'], as_index=False)['NHits'].sem()
-
-df = df.groupby(['MotorX', 'MotorY'], as_index=False)['NHits'].mean()
-
-pivot = df.pivot(index='MotorY', columns='MotorX', values='NHits')
-sns.heatmap(pivot,cmap='coolwarm',annot=True, cbar_kws={'label': 'NHits in Selected Candidate'},fmt=".2f")
-#sns.heatmap(df, cmap='coolwarm', square=True,annot=True)
-#h1 = axs3.hexbin(df.MotorX, df.MotorY, C=df.NHits, gridsize=50,cmap='coolwarm')
-
-axs3.set_xlabel("X motor [mm]")
-axs3.set_ylabel("Y motor [mm]")
-axs3.invert_yaxis()
-save_file = "output/Align_N_2.png"
-plt.savefig(save_file)
-
-fig, axs3 = plt.subplots(1, 1,figsize=(10,10))
-
-pivot = error.pivot(index='MotorY', columns='MotorX', values='NHits')
-sns.heatmap(pivot,cmap='coolwarm',annot=True, cbar_kws={'label': 'NHits in Selected Candidate'},fmt=".2f")
-#sns.heatmap(df, cmap='coolwarm', square=True,annot=True)
-#h1 = axs3.hexbin(df.MotorX, df.MotorY, C=df.NHits, gridsize=50,cmap='coolwarm')
-
-axs3.set_xlabel("X motor [mm]")
-axs3.set_ylabel("Y motor [mm]")
-save_file = "output/Align_N_2_error.png"
-plt.savefig(save_file)
-plt.show()
+        # Save data
+        df = pd.DataFrame(list(zip(motor_x, motor_y, nhits)),columns =['MotorX', 'MotorY','NHits'])
+        error = df.groupby(['MotorX', 'MotorY'], as_index=False)['NHits'].sem()
+        df = df.groupby(['MotorX', 'MotorY'], as_index=False)['NHits'].mean()
+        pivot = df.pivot(index='MotorY', columns='MotorX', values='NHits')
+        plt.figure(figsize=(11, 9))
+        sns.heatmap(pivot, cmap='jet', annot=True, cbar_kws={'label': 'NHits in Selected Candidate'}, fmt=".2f")
+        plt.grid()
+        plt.xlabel("X motor [mm]")
+        plt.ylabel("Y motor [mm]")
+        plt.tight_layout()
+        plt.show()
+        # TODO: Option to save files?
