@@ -1,6 +1,3 @@
-import pandas as pd
-from scipy.stats import norm
-
 import numpy as np
 import sys
 import os
