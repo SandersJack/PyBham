@@ -1,232 +1,253 @@
-import uproot
+import pandas as pd
+from scipy.stats import norm
+
 import numpy as np
+import sys
+import os
+import uproot as up
+import boost_histogram as bh
+import hist 
+from hist import Hist
 import matplotlib.pyplot as plt
 import mplhep as hep
-plt.style.use(hep.style.ROOT)
-import pandas as pd
-from csv import writer
-from scipy.stats import norm
-import argparse
-import os
+hep.style.use(hep.style.ROOT)
+
+VERSION = 1.0
+
+def process_command_line_args(args):
+    ''' Process command line arguments from user '''
+    arguments = {
+        "directory": "",
+        "wantsHelp": False,
+        "saveFigures": False,
+    }
+    for i, arg in enumerate(args):
+        if(arg == "--dir"):
+            if len(args) <= i + 1:
+                print("[Warning] You must provide a valid directory")
+                continue
+            arguments["directory"] = args[i+1]            
+        if(arg == "--help"):
+            arguments["wantsHelp"] = True
+        if(arg == "--save"):
+            arguments["saveFigures"] = True
+    return arguments
+
+def display_help():
+    print(f"CEDAR Diaphragm Scan Tool (v{VERSION})\n---------------------------\nArguments:\n--help\tDisplay this help menu.\n--dir <directory>\tPath to the directory with the reconstructed ROOT files to process.\n\n")
 
 
+if __name__ == "__main__":
+    args = process_command_line_args(sys.argv[1:]) # First argument is the name of the file which we don't need
+    if(args["wantsHelp"]):
+        display_help()
+    else:
+        if not os.path.isdir(args["directory"]):
+            print("[Error] The provided directory does not exist.")
+            exit()
 
-directory = '/afs/cern.ch/work/j/jsanders/Software/CedarAlignment/clicks/pro/'
+        mu_Hits = []
+        mu_CandHits = []
+        mu_SelCandHits = []
 
-mu_Hits = []
-mu_CandHits = []
-mu_SelCandHits = []
+        mu_Hits_Arg = []
+        mu_CandHits_Arg = []
+        mu_SelCandHits_Arg = []
 
-mu_Hits_Arg = []
-mu_CandHits_Arg = []
-mu_SelCandHits_Arg = []
+        cand = [] # Number of candidates
 
-cand = []
+        _burst = []
+        burst = []
+        cand_Arg = [] # Candidates per argonion hit
 
-_burst = []
-burst = []
-cand_Arg = []
+        name = "CLICKS"
 
-name = "CLICKS"
+        # Only look for ROOT files in the provided directory
+        files = [filename for filename in os.scandir(args["directory"]) if filename.is_file and "tar" not in filename.path and ".root" in filename.path]
 
-for filename in os.scandir(directory):
-    if filename.is_file():
-        if ".root" not in filename.path:
-            continue
-        file_name = filename.path
+        for filename in files:
+            with up.open(filename) as f:
+                # Get the stuff i need here....
+                burst = f['SpecialTrigger;1']['EventHeader/fBurstID'].array()
+                try:
+                    burst = burst[1]
+                except ValueError:
+                    continue
+
+                h_NRecoCand = f["CedarMonitor/NCandidates"].to_hist()
+                h_NRecoHits = f["CedarMonitor/NRecoHits"].to_hist()
+                h_NHitsInCandidate = f["CedarMonitor/NRecoHitsInCandidate"].to_hist()
+                h_NRecoHitsInSelectedCandidate = f["CedarMonitor/NRecoHitsInSelectedCandidate"].to_hist()
+                burst = f['SpecialTrigger;1']['EventHeader/fBurstID'].array()
+                run_number = f['SpecialTrigger;1']['EventHeader/fRunID'].array()
+                argonion = f['SpecialTrigger;1']['Beam/fARGONION'] # Was Arg
+                argonion_counts = argonion["fARGONION.fCounts"].array()
+                
+            arg_count = -99
+            try:
+                arg_count = argonion_counts[1]
+            except ValueError:
+                continue
         
-        try: 
-            inFile = uproot.open(file_name)
-        except ValueError:
-            continue
-        except OSError:
-            continue
+            burst = burst[0]
+            print(f"Burst Number: {burst}")
+            if run_number[0] > 12925:
+                burst += 100
         
-        burst = inFile['SpecialTrigger;1']['EventHeader/fBurstID'].array()
-        
-        try:
-            burst = burst[1]
-        except ValueError:
-            continue
-        
-        print("Burst Number: ", burst)
-        
-        h_NRecoCand = inFile["CedarMonitor/NCandidates"]
-        
-        h_NRecoHits = inFile["CedarMonitor/NRecoHits"]
-        
-        h_NHitsInCandidate = inFile["CedarMonitor/NRecoHitsInCandidate"]
-        
-        h_NRecoHitsInSelectedCandidate = inFile["CedarMonitor/NRecoHitsInSelectedCandidate"]
-        
-        burst = inFile['SpecialTrigger;1']['EventHeader/fBurstID'].array()
-        
-        runno = inFile['SpecialTrigger;1']['EventHeader/fRunID'].array()
-        
-        Arg = inFile['SpecialTrigger;1']['Beam/fARGONION']
-        
-        Arg_count = -99
-        try:
-            Arg_count = Arg["fARGONION.fCounts"].array()[1]
-        except ValueError:
-            continue
-        
-        burst = burst[0]
-        
-        if runno[0] > 12925:
-            burst+=100
-        
-        
-        
-        _burst.append(burst)
-        print("Arg Count: ", Arg_count)
-        
-        can = h_NRecoCand.member("fTsumwx")/h_NRecoCand.member("fEntries")
-        cand.append(can)  
-        cand_Arg.append(can/Arg_count)    
+            _burst.append(burst)
+            print(f"Argonion Count: {arg_count}")
+            # Calculate the average number of reco candidates as a weighted sum
+            can = np.sum((h_NRecoCand.axes[0].centers * h_NRecoCand.values())) / h_NRecoCand.values().sum()
+            cand.append(can)
+            cand_Arg.append(can / arg_count)    
 
-        mu1 = h_NRecoHits.member("fTsumwx")/h_NRecoHits.member("fEntries")
-        mu_Hits.append(mu1)
-        mu_Hits_Arg.append(mu1/(Arg_count))
+            mu1 = np.sum((h_NRecoHits.axes[0].centers * h_NRecoHits.values())) / h_NRecoHits.values().sum()
+            mu_Hits.append(mu1)
+            mu_Hits_Arg.append(mu1 / arg_count)
+            
+            mu2 = np.sum((h_NHitsInCandidate.axes[0].centers * h_NHitsInCandidate.values())) / h_NHitsInCandidate.values().sum()
+            mu_CandHits.append(mu2)
+            mu_CandHits_Arg.append(mu2 / arg_count)
+
+            try:
+                mu3 = np.sum((h_NRecoHitsInSelectedCandidate.axes[0].centers * h_NRecoHitsInSelectedCandidate.values())) / h_NRecoHitsInSelectedCandidate.values().sum()
+            except ZeroDivisionError:
+                mu3 = 0
+            mu_SelCandHits.append(mu3)
+            mu_SelCandHits_Arg.append(mu3 / arg_count)
+            print("---------------------")
         
 
-        mu2 = h_NHitsInCandidate.member("fTsumwx")/h_NHitsInCandidate.member("fEntries")
-        mu_CandHits.append(mu2)
-        mu_CandHits_Arg.append(mu2/(Arg_count))
+    fig, ax = plt.subplots(1, 1, figsize=(10,10))
+    ax.scatter(_burst, mu_Hits, marker="x", label="Reco.")
+    ax.scatter(_burst, mu_CandHits, marker="x", label="Cand.")
+    ax.scatter(_burst, mu_SelCandHits, marker="x", label="Sel. Cand.")
 
-        try:
-            mu3 = h_NRecoHitsInSelectedCandidate.member("fTsumwx")/h_NRecoHitsInSelectedCandidate.member("fEntries")
-        except ZeroDivisionError:
-            mu3 = 0
-        mu_SelCandHits.append(mu3)
-        mu_SelCandHits_Arg.append(mu3/(Arg_count))
-        
-        print("---------------------")
-        
+    ax.set_ylabel("Number of Hits")
+    ax.set_xlabel("Aperature [mm]")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(20))
+    ax.tick_params(axis='x', labelrotation = 90)
+    ax.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.1.pdf")
+    plt.close()
 
+    fig, ax = plt.subplots(1, 1, figsize=(10,10))
+    ax.scatter(_burst, mu_Hits_Arg, marker="x", label="Reco")
+    ax.scatter(_burst, mu_CandHits_Arg, marker="x", label="Cand")
+    ax.scatter(_burst, mu_SelCandHits_Arg, marker="x", label="Sel Cand")
 
-fig4, axs4 = plt.subplots(figsize=(10,10))
+    ax.set_ylabel("Number of Hits Normalise to Argonion")
+    ax.set_xlabel("Aperature [mm]")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(20))
+    ax.tick_params(axis='x', labelrotation = 90)
+    ax.set_ylim(0,0.1e-6)
+    ax.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.2.pdf")
+    plt.close()
 
-axs4.scatter(_burst,mu_Hits,marker="x",label="Reco")
-axs4.scatter(_burst,mu_CandHits,marker="x",label="Cand")
-axs4.scatter(_burst,mu_SelCandHits,marker="x",label="Sel Cand")
+    fig, ax = plt.subplots(figsize=(10,10))
+    ax.scatter(_burst,mu_Hits,marker="x",label="Reco")
+    ax.scatter(_burst,mu_CandHits,marker="x",label="Cand")
+    ax.scatter(_burst,mu_SelCandHits,marker="x",label="Sel Cand")
+    ax.set_ylabel("Number of Hits")
+    ax.set_xlabel("Aperature [mm]")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(20))
+    ax.tick_params(axis='x', labelrotation = 90)
+    ax.set_ylim(11,13)
+    ax.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.3.pdf")
+    plt.close()
 
-axs4.set_ylabel("Number of Hits")
-axs4.set_xlabel("Aperature [mm]")
-axs4.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs4.tick_params(axis='x', labelrotation = 90)
-#axs4.set_ylim(15,18)
-axs4.legend()
-save_file = "output/DiaScan/{}.1.png".format(name)
-plt.savefig(save_file)
+    fig, ax = plt.subplots(figsize=(10,10))
+    ax.scatter(_burst,mu_Hits_Arg,marker="x",label="Reco")
+    ax.scatter(_burst,mu_CandHits_Arg,marker="x",label="Cand")
+    ax.scatter(_burst,mu_SelCandHits_Arg,marker="x",label="Sel Cand")
 
-fig5, axs5 = plt.subplots(figsize=(10,10))
+    ax.set_ylabel("Number of Hits Normalise to Argonion")
+    ax.set_xlabel("Aperature [mm]")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(20))
+    ax.tick_params(axis='x', labelrotation = 90)
+    ax.set_ylim(11,13)
+    ax.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.4.pdf")
+    plt.close()
 
-axs5.scatter(_burst,mu_Hits_Arg,marker="x",label="Reco")
-axs5.scatter(_burst,mu_CandHits_Arg,marker="x",label="Cand")
-axs5.scatter(_burst,mu_SelCandHits_Arg,marker="x",label="Sel Cand")
-
-axs5.set_ylabel("Number of Hits Normalise to Argonion")
-axs5.set_xlabel("Aperature [mm]")
-axs5.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs5.tick_params(axis='x', labelrotation = 90)
-axs5.set_ylim(0,0.1e-6)
-axs5.legend()
-
-save_file = "output/DiaScan/{}.2.png".format(name)
-plt.savefig(save_file)
-
-fig6, axs6 = plt.subplots(figsize=(10,10))
-
-axs6.scatter(_burst,mu_Hits,marker="x",label="Reco")
-axs6.scatter(_burst,mu_CandHits,marker="x",label="Cand")
-axs6.scatter(_burst,mu_SelCandHits,marker="x",label="Sel Cand")
-
-axs6.set_ylabel("Number of Hits")
-axs6.set_xlabel("Aperature [mm]")
-axs6.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs6.tick_params(axis='x', labelrotation = 90)
-axs6.set_ylim(11,13)
-axs6.legend()
-
-save_file = "output/DiaScan/{}.3.png".format(name)
-plt.savefig(save_file)
-
-fig8, axs8 = plt.subplots(figsize=(10,10))
-
-axs8.scatter(_burst,mu_Hits_Arg,marker="x",label="Reco")
-axs8.scatter(_burst,mu_CandHits_Arg,marker="x",label="Cand")
-axs8.scatter(_burst,mu_SelCandHits_Arg,marker="x",label="Sel Cand")
-
-axs8.set_ylabel("Number of Hits Normalise to Argonion")
-axs8.set_xlabel("Aperature [mm]")
-axs8.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs8.tick_params(axis='x', labelrotation = 90)
-axs8.set_ylim(11,13)
-axs8.legend()
-
-save_file = "output/DiaScan/{}.4.png".format(name)
-plt.savefig(save_file)
-
-fig9, axs9 = plt.subplots(figsize=(10,10))
-
-axs9.scatter(_burst,mu_Hits,marker="x",label="Reco")
-axs9.scatter(_burst,mu_CandHits,marker="x",label="Cand")
-axs9.scatter(_burst,mu_SelCandHits,marker="x",label="Sel Cand")
-
-axs9.set_ylabel("Number of Hits")
-axs9.set_xlabel("Aperature [mm]")
-axs9.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs9.tick_params(axis='x', labelrotation = 90)
-axs9.set_ylim(4,5)
-axs9.legend()
-
-save_file = "output/DiaScan/{}.5.png".format(name)
-plt.savefig(save_file)
-
-fig10, axs10 = plt.subplots(figsize=(10,10))
-
-axs10.scatter(_burst,mu_Hits_Arg,marker="x",label="Reco")
-axs10.scatter(_burst,mu_CandHits_Arg,marker="x",label="Cand")
-axs10.scatter(_burst,mu_SelCandHits_Arg,marker="x",label="Sel Cand")
-
-axs10.set_ylabel("Number of Hits Normalise to Argonion")
-axs10.set_xlabel("Aperature [mm]")
-axs10.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs10.tick_params(axis='x', labelrotation = 90)
-axs10.set_ylim(4,5)
-axs10.legend()
-
-save_file = "output/DiaScan/{}.6.png".format(name)
-plt.savefig(save_file)
-
-fig11, axs11 = plt.subplots(figsize=(10,10))
-
-axs11.scatter(_burst,cand,marker="x",label="NCandidates")
-
-axs11.set_ylabel("Number of Can_bursttes")
-axs11.set_xlabel("Aperature [mm]")
-axs11.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs11.tick_params(axis='x', labelrotation = 90)
-axs11.legend()
-
-save_file = "output/DiaScan/{}.7.png".format(name)
-
-plt.savefig(save_file)
-
-fig12, axs12 = plt.subplots(figsize=(10,10))
-
-axs12.scatter(_burst,cand_Arg,marker="x",label="NCandidates")
-
-axs12.set_ylabel("Number of Can_bursttes Normlised to Argonian")
-axs12.set_xlabel("Aperature [mm]")
-axs12.xaxis.set_major_locator(plt.MaxNLocator(20))
-axs12.tick_params(axis='x', labelrotation = 90)
-axs12.legend()
-
-save_file = "output/DiaScan/{}.8.png".format(name)
-axs12.set_ylim(0,0.3e-7)
-plt.savefig(save_file)
+    fig9, axs9 = plt.subplots(figsize=(10,10))
+    axs9.scatter(_burst,mu_Hits,marker="x",label="Reco")
+    axs9.scatter(_burst,mu_CandHits,marker="x",label="Cand")
+    axs9.scatter(_burst,mu_SelCandHits,marker="x",label="Sel Cand")
+    axs9.set_ylabel("Number of Hits")
+    axs9.set_xlabel("Aperature [mm]")
+    axs9.xaxis.set_major_locator(plt.MaxNLocator(20))
+    axs9.tick_params(axis='x', labelrotation = 90)
+    axs9.set_ylim(4,5)
+    axs9.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.5.pdf")
+    plt.close()
 
 
-plt.show()
+    fig10, axs10 = plt.subplots(figsize=(10,10))
+    axs10.scatter(_burst,mu_Hits_Arg,marker="x",label="Reco")
+    axs10.scatter(_burst,mu_CandHits_Arg,marker="x",label="Cand")
+    axs10.scatter(_burst,mu_SelCandHits_Arg,marker="x",label="Sel Cand")
+
+    axs10.set_ylabel("Number of Hits Normalise to Argonion")
+    axs10.set_xlabel("Aperature [mm]")
+    axs10.xaxis.set_major_locator(plt.MaxNLocator(20))
+    axs10.tick_params(axis='x', labelrotation = 90)
+    axs10.set_ylim(4,5)
+    axs10.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.6.pdf")
+    plt.close()
+
+
+    fig11, axs11 = plt.subplots(figsize=(10,10))
+    axs11.scatter(_burst,cand,marker="x",label="NCandidates")
+    axs11.set_ylabel("Number of Can_bursttes")
+    axs11.set_xlabel("Aperature [mm]")
+    axs11.xaxis.set_major_locator(plt.MaxNLocator(20))
+    axs11.tick_params(axis='x', labelrotation = 90)
+    axs11.legend()
+    plt.tight_layout()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.7.pdf")
+    plt.close()
+
+    fig12, axs12 = plt.subplots(figsize=(10,10))
+    axs12.scatter(_burst,cand_Arg,marker="x",label="NCandidates")
+    axs12.set_ylabel("Number of Can_bursttes Normlised to Argonian")
+    axs12.set_xlabel("Aperature [mm]")
+    axs12.xaxis.set_major_locator(plt.MaxNLocator(20))
+    axs12.tick_params(axis='x', labelrotation = 90)
+    axs12.legend()
+    if(args["saveFigures"]):
+        if not os.path.exists('output'):
+                os.makedirs("output")
+        plt.savefig(f"output/DiaScan_{name}.8.pdf")
+    plt.close()
