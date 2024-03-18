@@ -10,6 +10,7 @@ hep.style.use(hep.style.ROOT)
 import uproot as up # For ROOT file I/O
 import boost_histogram as bh # Nicer histogram manipulation
 from hist import Hist # Wrapper for boost histogram
+from datetime import datetime
 import sys # For processing of command line arguments
 
 VERSION = 1.0
@@ -18,7 +19,8 @@ def process_command_line_args(args):
     ''' Process command line arguments from user '''
     arguments = {
         "directory": "",
-        "wantsHelp": False
+        "wantsHelp": False,
+        "saveFigures": False
     }
     for i, arg in enumerate(args):
         if(arg == "--dir"):
@@ -28,10 +30,12 @@ def process_command_line_args(args):
             arguments["directory"] = args[i+1]            
         if(arg == "--help"):
             arguments["wantsHelp"] = True
+        if(arg == "--save"):
+            arguments["saveFigures"] = True
     return arguments
 
 def display_help():
-    print(f"CEDAR Alignment Tool (v{VERSION})\n--------------------\nArguments:\n--help\tDisplay this help menu.\n--dir <directory>\tPath to the directory with the reconstructed ROOT files to process.\n\n")
+    print(f"CEDAR Alignment Tool (v{VERSION})\n---------------------------\nArguments:\n--help\tDisplay this help menu.\n--dir <directory>\tPath to the directory with the reconstructed ROOT files to process.\n\n")
 
 if __name__ == "__main__":
     args = process_command_line_args(sys.argv[1:]) # First argument is the name of the file which we don't need
@@ -44,6 +48,7 @@ if __name__ == "__main__":
         nhits = []
         
         if not os.path.isdir(args["directory"]):
+            print(args["directory"])
             print("[Error] The provided directory does not exist.")
             exit()
         files = [filename for filename in os.scandir(args["directory"]) if filename.is_file and "tar" not in filename.path and ".root" in filename.path]
@@ -109,5 +114,11 @@ if __name__ == "__main__":
         plt.xlabel("X motor [mm]")
         plt.ylabel("Y motor [mm]")
         plt.tight_layout()
+        if args["saveFigures"]:
+            current_date = datetime.now()
+            formatted_date = current_date.strftime("%d_%m_%Y")
+            # if output directory does not exist, create one
+            if not os.path.exists('output'):
+                os.makedirs("output")
+            plt.savefig(f"output/x_vs_y_CEDARMotor_{formatted_date}.pdf")
         plt.show()
-        # TODO: Option to save files?
