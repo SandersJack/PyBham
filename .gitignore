@@ -1,0 +1,9 @@
+# MacOS
+.DS_Store
+
+# ROOT files
+*.root
+
+# PDF and other generated outputs
+*.pdf
+*.png
